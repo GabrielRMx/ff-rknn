@@ -105,6 +105,7 @@ extern "C" {
 #define arg_s 36448 // -s
 
 static unsigned int hash_me(char *str);
+static void rknnInference(void *buf, bool &isActive);
 
 /* --- RKNN --- */
 int channel = 3;
@@ -142,8 +143,8 @@ int screen_width = 960;
 int screen_height = 540;
 int screen_left = 0;
 int screen_top = 0;
-unsigned int frame_width = 1024;
-unsigned int frame_height = 600;
+unsigned int frame_width = 1920;
+unsigned int frame_height = 1080;
 int v4l2;  // v4l2 h264
 int rtsp;  // rtsp h264
 int rtmp;  // flv h264
@@ -160,6 +161,7 @@ Uint32 currtime;
 Uint32 lasttime;
 int loop_counter = 0;
 const int frmrate_update = 25;
+int threadinit = 0;
 
 enum AVPixelFormat get_format(AVCodecContext *Context,
                               const enum AVPixelFormat *PixFmt)
@@ -246,15 +248,23 @@ static uint32_t drm_get_rgaformat(uint32_t drm_fmt)
     }
 }
 
-static void rknnInference(&isActive) {
+static void rknnInference(void *buf, bool &isActive) {
 
+    
+
+    int ret {};
     isActive = true;
 
-    inputs[0].buf = resize_buf;
-    rknn_inputs_set(ctx, io_num.n_input, inputs);
 
+    while (true) {
+
+    inputs[0].buf = buf;
+
+    ret = rknn_inputs_set(ctx, io_num.n_input, inputs);
     rknn_output outputs[io_num.n_output];
+
     memset(outputs, 0, sizeof(outputs));
+
     for (int i = 0; i < io_num.n_output; i++) {
         outputs[i].want_float = 0;
     }
@@ -270,11 +280,13 @@ static void rknnInference(&isActive) {
         out_scales.push_back(output_attrs[i].scale);
         out_zps.push_back(output_attrs[i].zp);
     }
+    
     post_process((int8_t *)outputs[0].buf, (int8_t *)outputs[1].buf, (int8_t *)outputs[2].buf,
                     height, width, box_conf_threshold, nms_threshold,
                     scale_w, scale_h, out_zps, out_scales, &detect_result_group);
+
     ret = rknn_outputs_release(ctx, io_num.n_output, outputs);
-    
+    }
 }
 
 static void displayTexture(void *imageData)
@@ -409,7 +421,12 @@ static int decode_and_display(AVCodecContext *dec_ctx, AVFrame *frame,
         return ret;
     }
     ret = 0;
-    std::thread rknn_thread; (rknnInference, std::ref(rknn_on));
+
+    if (threadinit == 0) {
+    std::thread rknn_thread(rknnInference, std::ref(resize_buf), std::ref(rknn_on));
+    rknn_thread.detach();
+    threadinit = 1;
+}
 
     while (ret >= 0) {
 
@@ -436,18 +453,16 @@ static int decode_and_display(AVCodecContext *dec_ctx, AVFrame *frame,
                         screen_width, screen_height, RK_FORMAT_BGR_888,
                         frameSize_texture, (char *)texture_dst_buf, (char *) frame->data[0]);
 
-            if (rknn_on)
-                drm_rga_buf(frame->width, frame->height, frame->width, frame->height, desc->objects[0].fd, src_format,
-                            width, height, RK_FORMAT_BGR_888, 
-                            frameSize_rknn, (char *)resize_buf, (char *) frame->data[0]);
+            // if (rknn_on)
+            drm_rga_buf(frame->width, frame->height, frame->width, frame->height, desc->objects[0].fd, src_format,
+                        width, height, RK_FORMAT_BGR_888, 
+                        frameSize_rknn, (char *)resize_buf, (char *) frame->data[0]);
 
-            rknn_thread = std::thread(rknnInference, std::ref(rknn_on));
-
+            
             displayTexture(texture_dst_buf);
         }
     }
 
-    rknn_thread.join();
     return 0;
 }
 
